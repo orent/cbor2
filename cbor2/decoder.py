@@ -15,6 +15,27 @@ class CBORDecodeError(Exception):
 
 
 class CBORDecoder(object):
+    """
+    Deserializes a CBOR encoded byte stream.
+
+    :param tag_hook: Callable that takes 3 arguments: the decoder instance, the
+        :class:`~cbor2.types.CBORTag` and the shareable index for the resulting object, if any.
+        This callback is called for any tags for which there is no built-in decoder.
+        The return value is substituted for the CBORTag object in the deserialized output.
+    :param object_hook: Callable that takes 2 arguments: the decoder instance and the dictionary.
+        This callback is called for each deserialized :class:`dict` object.
+        The return value is substituted for the dict in the deserialized output.
+    """
+
+    __slots__ = ('fp', 'tag_hook', 'object_hook', '_shareables')
+
+    def __init__(self, fp, tag_hook=None, object_hook=None):
+        self.fp = fp
+        self.tag_hook = tag_hook
+        self.object_hook = object_hook
+        self._shareables = []
+
+
     def decode_uint(self, subtype, shareable_index=None, allow_indefinite=False):
         # Major tag 0
         if subtype < 24:
@@ -293,26 +314,6 @@ class CBORDecoder(object):
         36: decode_mime,
         37: decode_uuid
     }
-
-    """
-    Deserializes a CBOR encoded byte stream.
-
-    :param tag_hook: Callable that takes 3 arguments: the decoder instance, the
-        :class:`~cbor2.types.CBORTag` and the shareable index for the resulting object, if any.
-        This callback is called for any tags for which there is no built-in decoder.
-        The return value is substituted for the CBORTag object in the deserialized output.
-    :param object_hook: Callable that takes 2 arguments: the decoder instance and the dictionary.
-        This callback is called for each deserialized :class:`dict` object.
-        The return value is substituted for the dict in the deserialized output.
-    """
-
-    __slots__ = ('fp', 'tag_hook', 'object_hook', '_shareables')
-
-    def __init__(self, fp, tag_hook=None, object_hook=None):
-        self.fp = fp
-        self.tag_hook = tag_hook
-        self.object_hook = object_hook
-        self._shareables = []
 
     def _allocate_shareable(self):
         self._shareables.append(None)
