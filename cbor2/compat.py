@@ -26,16 +26,12 @@ if sys.version_info.major < 3:
     def bytes_from_list(values):
         return bytes(bytearray(values))
 
-    byte_as_integer = ord
     timezone.utc = timezone(timedelta(0))
     xrange = xrange  # noqa
     long = long  # noqa
     unicode = unicode  # noqa
 else:
     from datetime import timezone
-
-    def byte_as_integer(bytestr):
-        return bytestr[0]
 
     def as_unicode(string):
         return string
