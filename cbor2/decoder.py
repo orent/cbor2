@@ -13,289 +13,290 @@ timestamp_re = re.compile(r'^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)'
 class CBORDecodeError(Exception):
     """Raised when an error occurs deserializing a CBOR datastream."""
 
-
-def decode_uint(decoder, subtype, shareable_index=None, allow_indefinite=False):
-    # Major tag 0
-    if subtype < 24:
-        return subtype
-    elif subtype == 24:
-        return struct.unpack('>B', decoder.read(1))[0]
-    elif subtype == 25:
-        return struct.unpack('>H', decoder.read(2))[0]
-    elif subtype == 26:
-        return struct.unpack('>L', decoder.read(4))[0]
-    elif subtype == 27:
-        return struct.unpack('>Q', decoder.read(8))[0]
-    elif subtype == 31 and allow_indefinite:
-        return None
-    else:
-        raise CBORDecodeError('unknown unsigned integer subtype 0x%x' % subtype)
-
-
-def decode_negint(decoder, subtype, shareable_index=None):
-    # Major tag 1
-    uint = decode_uint(decoder, subtype)
-    return -uint - 1
-
-
-def decode_bytestring(decoder, subtype, shareable_index=None):
-    # Major tag 2
-    length = decode_uint(decoder, subtype, allow_indefinite=True)
-    if length is None:
-        # Indefinite length
-        buf = bytearray()
-        while True:
-            initial_byte = byte_as_integer(decoder.read(1))
-            if initial_byte == 255:
-                return buf
-            else:
-                length = decode_uint(decoder, initial_byte & 31)
-                value = decoder.read(length)
-                buf.extend(value)
-    else:
-        return decoder.read(length)
-
-
-def decode_string(decoder, subtype, shareable_index=None):
-    # Major tag 3
-    return decode_bytestring(decoder, subtype).decode('utf-8')
-
-
-def decode_array(decoder, subtype, shareable_index=None):
-    # Major tag 4
-    items = []
-    decoder.set_shareable(shareable_index, items)
-    length = decode_uint(decoder, subtype, allow_indefinite=True)
-    if length is None:
-        # Indefinite length
-        while True:
-            value = decoder.decode()
-            if value is break_marker:
-                break
-            else:
-                items.append(value)
-    else:
-        for _ in xrange(length):
-            item = decoder.decode()
-            items.append(item)
-
-    return items
-
-
-def decode_map(decoder, subtype, shareable_index=None):
-    # Major tag 5
-    dictionary = {}
-    decoder.set_shareable(shareable_index, dictionary)
-    length = decode_uint(decoder, subtype, allow_indefinite=True)
-    if length is None:
-        # Indefinite length
-        while True:
-            key = decoder.decode()
-            if key is break_marker:
-                break
-            else:
-                value = decoder.decode()
-                dictionary[key] = value
-    else:
-        for _ in xrange(length):
-            key = decoder.decode()
-            value = decoder.decode()
-            dictionary[key] = value
-
-    if decoder.object_hook:
-        return decoder.object_hook(decoder, dictionary)
-    else:
-        return dictionary
-
-
-def decode_semantic(decoder, subtype, shareable_index=None):
-    # Major tag 6
-    tagnum = decode_uint(decoder, subtype)
-
-    # Special handling for the "shareable" tag
-    if tagnum == 28:
-        shareable_index = decoder._allocate_shareable()
-        return decoder.decode(shareable_index)
-
-    value = decoder.decode()
-    semantic_decoder = semantic_decoders.get(tagnum)
-    if semantic_decoder:
-        return semantic_decoder(decoder, value, shareable_index)
-
-    tag = CBORTag(tagnum, value)
-    if decoder.tag_hook:
-        return decoder.tag_hook(decoder, tag, shareable_index)
-    else:
-        return tag
-
-
-def decode_special(decoder, subtype, shareable_index=None):
-    # Simple value
-    if subtype < 20:
-        return CBORSimpleValue(subtype)
-
-    # Major tag 7
-    return special_decoders[subtype](decoder)
-
-
-#
-# Semantic decoders (major tag 6)
-#
-
-def decode_datetime_string(decoder, value, shareable_index=None):
-    # Semantic tag 0
-    match = timestamp_re.match(value)
-    if match:
-        year, month, day, hour, minute, second, micro, offset_h, offset_m = match.groups()
-        if offset_h:
-            tz = timezone(timedelta(hours=int(offset_h), minutes=int(offset_m)))
-        else:
-            tz = timezone.utc
-
-        return datetime(int(year), int(month), int(day), int(hour), int(minute), int(second),
-                        int(micro or 0), tz)
-    else:
-        raise CBORDecodeError('invalid datetime string: {}'.format(value))
-
-
-def decode_epoch_datetime(decoder, value, shareable_index=None):
-    # Semantic tag 1
-    return datetime.fromtimestamp(value, timezone.utc)
-
-
-def decode_positive_bignum(decoder, value, shareable_index=None):
-    # Semantic tag 2
-    from binascii import hexlify
-    return int(hexlify(value), 16)
-
-
-def decode_negative_bignum(decoder, value, shareable_index=None):
-    # Semantic tag 3
-    return -decode_positive_bignum(decoder, value) - 1
-
-
-def decode_fraction(decoder, value, shareable_index=None):
-    # Semantic tag 4
-    from decimal import Decimal
-    exp = Decimal(value[0])
-    mantissa = Decimal(value[1])
-    return mantissa * (10 ** exp)
-
-
-def decode_bigfloat(decoder, value, shareable_index=None):
-    # Semantic tag 5
-    from decimal import Decimal
-    exp = Decimal(value[0])
-    mantissa = Decimal(value[1])
-    return mantissa * (2 ** exp)
-
-
-def decode_sharedref(decoder, value, shareable_index=None):
-    # Semantic tag 29
-    try:
-        shared = decoder._shareables[value]
-    except IndexError:
-        raise CBORDecodeError('shared reference %d not found' % value)
-
-    if shared is None:
-        raise CBORDecodeError('shared value %d has not been initialized' % value)
-    else:
-        return shared
-
-
-def decode_rational(decoder, value, shareable_index=None):
-    # Semantic tag 30
-    from fractions import Fraction
-    return Fraction(*value)
-
-
-def decode_regexp(decoder, value, shareable_index=None):
-    # Semantic tag 35
-    return re.compile(value)
-
-
-def decode_mime(decoder, value, shareable_index=None):
-    # Semantic tag 36
-    from email.parser import Parser
-    return Parser().parsestr(value)
-
-
-def decode_uuid(decoder, value, shareable_index=None):
-    # Semantic tag 37
-    from uuid import UUID
-    return UUID(bytes=value)
-
-
-#
-# Special decoders (major tag 7)
-#
-
-def decode_simple_value(decoder, shareable_index=None):
-    return CBORSimpleValue(struct.unpack('>B', decoder.read(1))[0])
-
-
-def decode_float16(decoder, shareable_index=None):
-    # Code adapted from RFC 7049, appendix D
-    from math import ldexp
-
-    def decode_single(single):
-        return struct.unpack("!f", struct.pack("!I", single))[0]
-
-    payload = struct.unpack('>H', decoder.read(2))[0]
-    value = (payload & 0x7fff) << 13 | (payload & 0x8000) << 16
-    if payload & 0x7c00 != 0x7c00:
-        return ldexp(decode_single(value), 112)
-
-    return decode_single(value | 0x7f800000)
-
-
-def decode_float32(decoder, shareable_index=None):
-    return struct.unpack('>f', decoder.read(4))[0]
-
-
-def decode_float64(decoder, shareable_index=None):
-    return struct.unpack('>d', decoder.read(8))[0]
-
-
-major_decoders = {
-    0: decode_uint,
-    1: decode_negint,
-    2: decode_bytestring,
-    3: decode_string,
-    4: decode_array,
-    5: decode_map,
-    6: decode_semantic,
-    7: decode_special
+fmt_by_subtype = {
+    24: '>B', 25: '>H', 26: '>L', 27: '>Q'
 }
 
-special_decoders = {
-    20: lambda self: False,
-    21: lambda self: True,
-    22: lambda self: None,
-    23: lambda self: undefined,
-    24: decode_simple_value,
-    25: decode_float16,
-    26: decode_float32,
-    27: decode_float64,
-    31: lambda self: break_marker
-}
-
-semantic_decoders = {
-    0: decode_datetime_string,
-    1: decode_epoch_datetime,
-    2: decode_positive_bignum,
-    3: decode_negative_bignum,
-    4: decode_fraction,
-    5: decode_bigfloat,
-    29: decode_sharedref,
-    30: decode_rational,
-    35: decode_regexp,
-    36: decode_mime,
-    37: decode_uuid
-}
+size_by_subtype = (
+    0, 0, 0, 0,   0, 0, 0, 0,
+    0, 0, 0, 0,   0, 0, 0, 0,
+    0, 0, 0, 0,   0, 0, 0, 0,
+    1, 2, 4, 8,   0, 0, 0, 0,
+)
 
 
 class CBORDecoder(object):
+
+    def decode_uint(decoder, subtype, tokendata, shareable_index=None):
+        # Major tag 0
+        if subtype < 24:
+            return subtype
+        elif subtype in fmt_by_subtype:
+            return struct.unpack(fmt_by_subtype[subtype], tokendata)[0]
+        else:
+            raise CBORDecodeError('unknown unsigned integer subtype 0x%x' % subtype)
+
+
+    def decode_negint(decoder, subtype, tokendata, shareable_index=None):
+        # Major tag 1
+        uint = decoder.decode_uint(subtype, tokendata)
+        return -uint - 1
+
+
+    def decode_bytestring(decoder, subtype, tokendata, shareable_index=None):
+        # Major tag 2
+        if subtype == 31:
+            # Indefinite length
+            buf = bytearray()
+            while True:
+                initial_byte, tokendata = decoder.read_token()
+                if initial_byte == 255:
+                    return buf
+                else:
+                    buf.extend(tokendata)
+        else:
+            return tokendata
+
+
+    def decode_string(decoder, subtype, tokendata, shareable_index=None):
+        # Major tag 3
+        return decoder.decode_bytestring(subtype, tokendata).decode('utf-8')
+
+
+    def decode_array(decoder, subtype, tokendata, shareable_index=None):
+        # Major tag 4
+        items = []
+        decoder.set_shareable(shareable_index, items)
+        if subtype == 31:
+            # Indefinite length
+            while True:
+                value = decoder.decode()
+                if value is break_marker:
+                    break
+                else:
+                    items.append(value)
+        else:
+            length = decoder.decode_uint(subtype, tokendata)
+            for _ in xrange(length):
+                item = decoder.decode()
+                items.append(item)
+
+        return items
+
+
+    def decode_map(decoder, subtype, tokendata, shareable_index=None):
+        # Major tag 5
+        dictionary = {}
+        decoder.set_shareable(shareable_index, dictionary)
+        if subtype == 31:
+            # Indefinite length
+            while True:
+                key = decoder.decode()
+                if key is break_marker:
+                    break
+                else:
+                    value = decoder.decode()
+                    dictionary[key] = value
+        else:
+            length = decoder.decode_uint(subtype, tokendata)
+            for _ in xrange(length):
+                key = decoder.decode()
+                value = decoder.decode()
+                dictionary[key] = value
+
+        if decoder.object_hook:
+            return decoder.object_hook(decoder, dictionary)
+        else:
+            return dictionary
+
+
+    def decode_semantic(decoder, subtype, tokendata, shareable_index=None):
+        # Major tag 6
+        tagnum = decoder.decode_uint(subtype, tokendata)
+
+        # Special handling for the "shareable" tag
+        if tagnum == 28:
+            shareable_index = decoder._allocate_shareable()
+            return decoder.decode(shareable_index)
+
+        value = decoder.decode()
+        semantic_decoder = decoder.semantic_decoders.get(tagnum)
+        if semantic_decoder:
+            return semantic_decoder(decoder, value, shareable_index)
+
+        tag = CBORTag(tagnum, value)
+        if decoder.tag_hook:
+            return decoder.tag_hook(decoder, tag, shareable_index)
+        else:
+            return tag
+
+
+    def decode_special(decoder, subtype, tokendata, shareable_index=None):
+        # Simple value
+        if subtype < 20:
+            return CBORSimpleValue(subtype)
+
+        # Major tag 7
+        return decoder.special_decoders[subtype](decoder, tokendata)
+
+
+    #
+    # Semantic decoders (major tag 6)
+    #
+
+    def decode_datetime_string(decoder, value, shareable_index=None):
+        # Semantic tag 0
+        match = timestamp_re.match(value)
+        if match:
+            year, month, day, hour, minute, second, micro, offset_h, offset_m = match.groups()
+            if offset_h:
+                tz = timezone(timedelta(hours=int(offset_h), minutes=int(offset_m)))
+            else:
+                tz = timezone.utc
+
+            return datetime(int(year), int(month), int(day), int(hour), int(minute), int(second),
+                            int(micro or 0), tz)
+        else:
+            raise CBORDecodeError('invalid datetime string: {}'.format(value))
+
+
+    def decode_epoch_datetime(decoder, value, shareable_index=None):
+        # Semantic tag 1
+        return datetime.fromtimestamp(value, timezone.utc)
+
+
+    def decode_positive_bignum(decoder, value, shareable_index=None):
+        # Semantic tag 2
+        from binascii import hexlify
+        return int(hexlify(value), 16)
+
+
+    def decode_negative_bignum(decoder, value, shareable_index=None):
+        # Semantic tag 3
+        return -decoder.decode_positive_bignum(value) - 1
+
+
+    def decode_fraction(decoder, value, shareable_index=None):
+        # Semantic tag 4
+        from decimal import Decimal
+        exp = Decimal(value[0])
+        mantissa = Decimal(value[1])
+        return mantissa * (10 ** exp)
+
+
+    def decode_bigfloat(decoder, value, shareable_index=None):
+        # Semantic tag 5
+        from decimal import Decimal
+        exp = Decimal(value[0])
+        mantissa = Decimal(value[1])
+        return mantissa * (2 ** exp)
+
+
+    def decode_sharedref(decoder, value, shareable_index=None):
+        # Semantic tag 29
+        try:
+            shared = decoder._shareables[value]
+        except IndexError:
+            raise CBORDecodeError('shared reference %d not found' % value)
+
+        if shared is None:
+            raise CBORDecodeError('shared value %d has not been initialized' % value)
+        else:
+            return shared
+
+
+    def decode_rational(decoder, value, shareable_index=None):
+        # Semantic tag 30
+        from fractions import Fraction
+        return Fraction(*value)
+
+
+    def decode_regexp(decoder, value, shareable_index=None):
+        # Semantic tag 35
+        return re.compile(value)
+
+
+    def decode_mime(decoder, value, shareable_index=None):
+        # Semantic tag 36
+        from email.parser import Parser
+        return Parser().parsestr(value)
+
+
+    def decode_uuid(decoder, value, shareable_index=None):
+        # Semantic tag 37
+        from uuid import UUID
+        return UUID(bytes=value)
+
+
+    #
+    # Special decoders (major tag 7)
+    #
+
+    def decode_simple_value(decoder, shareable_index=None):
+        return CBORSimpleValue(struct.unpack('>B', decoder.read(1))[0])
+
+
+    def decode_float16(decoder, shareable_index=None):
+        # Code adapted from RFC 7049, appendix D
+        from math import ldexp
+
+        def decode_single(single):
+            return struct.unpack("!f", struct.pack("!I", single))[0]
+
+        payload = struct.unpack('>H', decoder.read(2))[0]
+        value = (payload & 0x7fff) << 13 | (payload & 0x8000) << 16
+        if payload & 0x7c00 != 0x7c00:
+            return ldexp(decode_single(value), 112)
+
+        return decode_single(value | 0x7f800000)
+
+
+    def decode_float32(decoder, shareable_index=None):
+        return struct.unpack('>f', decoder.read(4))[0]
+
+
+    def decode_float64(decoder, shareable_index=None):
+        return struct.unpack('>d', decoder.read(8))[0]
+
+
+    major_decoders = {
+        0: decode_uint,
+        1: decode_negint,
+        2: decode_bytestring,
+        3: decode_string,
+        4: decode_array,
+        5: decode_map,
+        6: decode_semantic,
+        7: decode_special
+    }
+
+    special_decoders = {
+        20: lambda self: False,
+        21: lambda self: True,
+        22: lambda self: None,
+        23: lambda self: undefined,
+        24: decode_simple_value,
+        25: decode_float16,
+        26: decode_float32,
+        27: decode_float64,
+        31: lambda self: break_marker
+    }
+
+    semantic_decoders = {
+        0: decode_datetime_string,
+        1: decode_epoch_datetime,
+        2: decode_positive_bignum,
+        3: decode_negative_bignum,
+        4: decode_fraction,
+        5: decode_bigfloat,
+        29: decode_sharedref,
+        30: decode_rational,
+        35: decode_regexp,
+        36: decode_mime,
+        37: decode_uuid
+    }
+
+
     """
     Deserializes a CBOR encoded byte stream.
 
@@ -357,7 +358,7 @@ class CBORDecoder(object):
             raise CBORDecodeError('error reading major type at index {}: {}'
                                   .format(self.fp.tell(), e))
 
-        decoder = major_decoders[major_type]
+        decoder = self.major_decoders[major_type]
         try:
             return decoder(self, subtype, shareable_index)
         except CBORDecodeError:
