@@ -36,13 +36,13 @@ class CBORDecoder(object):
 
     def decode_negint(decoder, subtype, shareable_index):
         # Major tag 1
-        uint = decoder.decode_uint(subtype, shareable_index)
+        uint = decoder.decode_uint(subtype, shareable_index=shareable_index)
         return -uint - 1
 
 
     def decode_bytestring(decoder, subtype, shareable_index):
         # Major tag 2
-        length = decoder.decode_uint(subtype, shareable_index, allow_indefinite=True)
+        length = decoder.decode_uint(subtype, shareable_index=shareable_index, allow_indefinite=True)
         if length is None:
             # Indefinite length
             buf = bytearray()
@@ -51,7 +51,7 @@ class CBORDecoder(object):
                 if initial_byte == 255:
                     return buf
                 else:
-                    length = decoder.decode_uint(initial_byte & 31, shareable_index)
+                    length = decoder.decode_uint(initial_byte & 31, shareable_index=shareable_index)
                     value = decoder.read(length)
                     buf.extend(value)
         else:
@@ -60,14 +60,14 @@ class CBORDecoder(object):
 
     def decode_string(decoder, subtype, shareable_index):
         # Major tag 3
-        return decoder.decode_bytestring(subtype, shareable_index).decode('utf-8')
+        return decoder.decode_bytestring(subtype, shareable_index=shareable_index).decode('utf-8')
 
 
     def decode_array(decoder, subtype, shareable_index):
         # Major tag 4
         items = []
         decoder.set_shareable(shareable_index, items)
-        length = decoder.decode_uint(subtype, shareable_index, allow_indefinite=True)
+        length = decoder.decode_uint(subtype, shareable_index=shareable_index, allow_indefinite=True)
         if length is None:
             # Indefinite length
             while True:
@@ -88,7 +88,7 @@ class CBORDecoder(object):
         # Major tag 5
         dictionary = {}
         decoder.set_shareable(shareable_index, dictionary)
-        length = decoder.decode_uint(subtype, shareable_index, allow_indefinite=True)
+        length = decoder.decode_uint(subtype, shareable_index=shareable_index, allow_indefinite=True)
         if length is None:
             # Indefinite length
             while True:
@@ -112,7 +112,7 @@ class CBORDecoder(object):
 
     def decode_semantic(decoder, subtype, shareable_index):
         # Major tag 6
-        tagnum = decoder.decode_uint(subtype, shareable_index)
+        tagnum = decoder.decode_uint(subtype, shareable_index=shareable_index)
 
         # Special handling for the "shareable" tag
         if tagnum == 28:
@@ -122,7 +122,7 @@ class CBORDecoder(object):
         value = decoder.decode()
         semantic_decoder = decoder.semantic_decoders.get(tagnum)
         if semantic_decoder:
-            return semantic_decoder(decoder, value, shareable_index)
+            return semantic_decoder(decoder, value, shareable_index=shareable_index)
 
         tag = CBORTag(tagnum, value)
         if decoder.tag_hook:
@@ -137,7 +137,7 @@ class CBORDecoder(object):
             return CBORSimpleValue(subtype)
 
         # Major tag 7
-        return decoder.special_decoders[subtype](decoder, shareable_index)
+        return decoder.special_decoders[subtype](decoder, shareable_index=shareable_index)
 
 
     #
@@ -173,7 +173,7 @@ class CBORDecoder(object):
 
     def decode_negative_bignum(decoder, value, shareable_index):
         # Semantic tag 3
-        return -decoder.decode_positive_bignum(value, shareable_index) - 1
+        return -decoder.decode_positive_bignum(value, shareable_index=shareable_index) - 1
 
 
     def decode_fraction(decoder, value, shareable_index):
@@ -271,15 +271,15 @@ class CBORDecoder(object):
     }
 
     special_decoders = {
-        20: lambda *args: False,
-        21: lambda *args: True,
-        22: lambda *args: None,
-        23: lambda *args: undefined,
+        20: lambda *args, **kw: False,
+        21: lambda *args, **kw: True,
+        22: lambda *args, **kw: None,
+        23: lambda *args, **kw: undefined,
         24: decode_simple_value,
         25: decode_float16,
         26: decode_float32,
         27: decode_float64,
-        31: lambda *args: break_marker
+        31: lambda *args, **kw: break_marker
     }
 
     semantic_decoders = {
@@ -360,7 +360,7 @@ class CBORDecoder(object):
 
         decoder = self.major_decoders[major_type]
         try:
-            return decoder(self, subtype, shareable_index)
+            return decoder(self, subtype, shareable_index=shareable_index)
         except CBORDecodeError:
             raise
         except Exception as e:
