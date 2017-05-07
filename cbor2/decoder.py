@@ -24,16 +24,17 @@ class CBORDecoder(object):
 
     def decode_uint(decoder, subtype, data, shareable_index, allow_indefinite=False):
         # Major tag 0
+        assert data == decoder.read(size_by_subtype[subtype])
         if subtype < 24:
             return subtype
         elif subtype == 24:
-            return struct.unpack('>B', decoder.read(1))[0]
+            return struct.unpack('>B', data)[0]
         elif subtype == 25:
-            return struct.unpack('>H', decoder.read(2))[0]
+            return struct.unpack('>H', data)[0]
         elif subtype == 26:
-            return struct.unpack('>L', decoder.read(4))[0]
+            return struct.unpack('>L', data)[0]
         elif subtype == 27:
-            return struct.unpack('>Q', decoder.read(8))[0]
+            return struct.unpack('>Q', data)[0]
         elif subtype == 31 and allow_indefinite:
             return None
         else:
@@ -57,6 +58,11 @@ class CBORDecoder(object):
                 if initial_byte == 255:
                     return buf
                 else:
+                    datasize = size_by_subtype[initial_byte & 31]
+                    pos = decoder.fp.tell()
+                    data = decoder.fp.read(datasize)
+                    decoder.fp.seek(pos)
+
                     length = decoder.decode_uint(initial_byte & 31, data, shareable_index=shareable_index)
                     value = decoder.read(length)
                     buf.extend(value)
@@ -139,6 +145,7 @@ class CBORDecoder(object):
 
     def decode_special(decoder, subtype, data, shareable_index):
         # Simple value
+        assert data == decoder.read(size_by_subtype[subtype])
         if subtype < 20:
             return CBORSimpleValue(subtype)
 
@@ -239,7 +246,7 @@ class CBORDecoder(object):
     #
 
     def decode_simple_value(decoder, data, shareable_index):
-        return CBORSimpleValue(struct.unpack('>B', decoder.read(1))[0])
+        return CBORSimpleValue(struct.unpack('>B', data)[0])
 
 
     def decode_float16(decoder, data, shareable_index):
@@ -249,7 +256,7 @@ class CBORDecoder(object):
         def decode_single(single):
             return struct.unpack("!f", struct.pack("!I", single))[0]
 
-        payload = struct.unpack('>H', decoder.read(2))[0]
+        payload = struct.unpack('>H', data)[0]
         value = (payload & 0x7fff) << 13 | (payload & 0x8000) << 16
         if payload & 0x7c00 != 0x7c00:
             return ldexp(decode_single(value), 112)
@@ -258,11 +265,11 @@ class CBORDecoder(object):
 
 
     def decode_float32(decoder, data, shareable_index):
-        return struct.unpack('>f', decoder.read(4))[0]
+        return struct.unpack('>f', data)[0]
 
 
     def decode_float64(decoder, data, shareable_index):
-        return struct.unpack('>d', decoder.read(8))[0]
+        return struct.unpack('>d', data)[0]
 
 
     major_decoders = {
