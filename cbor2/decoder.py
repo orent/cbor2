@@ -117,7 +117,9 @@ class CBORDecoder(object):
         # Special handling for the "shareable" tag
         if tagnum == 28:
             shareable_index = decoder._allocate_shareable()
-            return decoder.decode(shareable_index)
+            ret = decoder.decode(shareable_index)
+            decoder._pop_shareable()
+            return ret
 
         value = decoder.decode()
         semantic_decoder = decoder.semantic_decoders.get(tagnum)
@@ -236,7 +238,7 @@ class CBORDecoder(object):
         return CBORSimpleValue(struct.unpack('>B', tokendata)[0])
 
 
-    def decode_float16(decoder, shareable_index=None):
+    def decode_float16(decoder, tokendata, shareable_index=None):
         # Code adapted from RFC 7049, appendix D
         from math import ldexp
 
@@ -309,29 +311,42 @@ class CBORDecoder(object):
         The return value is substituted for the dict in the deserialized output.
     """
 
-    __slots__ = ('fp', 'tag_hook', 'object_hook', '_shareables')
+    __slots__ = ('fp', 'tag_hook', 'object_hook', '_shareables', '_shareables_stack')
 
     def __init__(self, fp, tag_hook=None, object_hook=None):
         self.fp = fp
         self.tag_hook = tag_hook
         self.object_hook = object_hook
         self._shareables = []
+        self._shareables_stack = []
 
     def _allocate_shareable(self):
+        index = len(self._shareables)
         self._shareables.append(None)
-        return len(self._shareables) - 1
+        self._shareables_stack.append(index)
+        return index
+
+    def _pop_shareable(self):
+        self._shareables_stack.pop()
 
     def set_shareable(self, index, value):
         """
         Set the shareable value for the last encountered shared value marker, if any.
 
-        If the given index is ``None``, nothing is done.
+        If the given index is ``None``, the index is chosen automatically or ignored
+        if irrelevant in current context.
 
         :param index: the value of the ``shared_index`` argument to the decoder
         :param value: the shared value
 
         """
-        if index is not None:
+        if self._shareables_stack:
+            if index is None:
+                index = self._shareables_stack[-1]
+
+            assert index == self._shareables_stack[-1]
+            assert self._shareables[index] is None or self._shareables[index] is value
+
             self._shareables[index] = value
 
     def read_token(self):
@@ -342,7 +357,7 @@ class CBORDecoder(object):
         initial_byte = byte_as_integer(self.fp.read(1))
 
         subtype = initial_byte & 31
-        datasize = size_by_subtype[initial_byte & 31]
+        datasize = size_by_subtype[subtype]
         tokendata = self.fp.read(datasize)
 
         if 0x60 <= initial_byte | 0x20 <= 0x7b:
