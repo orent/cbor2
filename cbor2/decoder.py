@@ -27,7 +27,7 @@ size_by_subtype = (
 
 class CBORDecoder(object):
 
-    def decode_uint(decoder, subtype, tokendata, shareable_index=None):
+    def decode_uint(decoder, subtype, tokendata):
         # Major tag 0
         if subtype < 24:
             return subtype
@@ -37,13 +37,13 @@ class CBORDecoder(object):
             raise CBORDecodeError('unknown unsigned integer subtype 0x%x' % subtype)
 
 
-    def decode_negint(decoder, subtype, tokendata, shareable_index=None):
+    def decode_negint(decoder, subtype, tokendata):
         # Major tag 1
         uint = decoder.decode_uint(subtype, tokendata)
         return -uint - 1
 
 
-    def decode_bytestring(decoder, subtype, tokendata, shareable_index=None):
+    def decode_bytestring(decoder, subtype, tokendata):
         # Major tag 2
         if subtype == 31:
             # Indefinite length
@@ -58,15 +58,15 @@ class CBORDecoder(object):
             return tokendata
 
 
-    def decode_string(decoder, subtype, tokendata, shareable_index=None):
+    def decode_string(decoder, subtype, tokendata):
         # Major tag 3
         return decoder.decode_bytestring(subtype, tokendata).decode('utf-8')
 
 
-    def decode_array(decoder, subtype, tokendata, shareable_index=None):
+    def decode_array(decoder, subtype, tokendata):
         # Major tag 4
         items = []
-        decoder.set_shareable(shareable_index, items)
+        decoder.set_shareable(None, items)
         if subtype == 31:
             # Indefinite length
             while True:
@@ -84,10 +84,10 @@ class CBORDecoder(object):
         return items
 
 
-    def decode_map(decoder, subtype, tokendata, shareable_index=None):
+    def decode_map(decoder, subtype, tokendata):
         # Major tag 5
         dictionary = {}
-        decoder.set_shareable(shareable_index, dictionary)
+        decoder.set_shareable(None, dictionary)
         if subtype == 31:
             # Indefinite length
             while True:
@@ -110,30 +110,30 @@ class CBORDecoder(object):
             return dictionary
 
 
-    def decode_semantic(decoder, subtype, tokendata, shareable_index=None):
+    def decode_semantic(decoder, subtype, tokendata):
         # Major tag 6
         tagnum = decoder.decode_uint(subtype, tokendata)
 
         # Special handling for the "shareable" tag
         if tagnum == 28:
-            shareable_index = decoder._allocate_shareable()
-            ret = decoder.decode(shareable_index)
+            decoder._allocate_shareable()
+            ret = decoder.decode()
             decoder._pop_shareable()
             return ret
 
         value = decoder.decode()
         semantic_decoder = decoder.semantic_decoders.get(tagnum)
         if semantic_decoder:
-            return semantic_decoder(decoder, value, shareable_index)
+            return semantic_decoder(decoder, value)
 
         tag = CBORTag(tagnum, value)
         if decoder.tag_hook:
-            return decoder.tag_hook(decoder, tag, shareable_index)
+            return decoder.tag_hook(decoder, tag, None)
         else:
             return tag
 
 
-    def decode_special(decoder, subtype, tokendata, shareable_index=None):
+    def decode_special(decoder, subtype, tokendata):
         # Simple value
         if subtype < 20:
             return CBORSimpleValue(subtype)
@@ -146,7 +146,7 @@ class CBORDecoder(object):
     # Semantic decoders (major tag 6)
     #
 
-    def decode_datetime_string(decoder, value, shareable_index=None):
+    def decode_datetime_string(decoder, value):
         # Semantic tag 0
         match = timestamp_re.match(value)
         if match:
@@ -162,23 +162,23 @@ class CBORDecoder(object):
             raise CBORDecodeError('invalid datetime string: {}'.format(value))
 
 
-    def decode_epoch_datetime(decoder, value, shareable_index=None):
+    def decode_epoch_datetime(decoder, value):
         # Semantic tag 1
         return datetime.fromtimestamp(value, timezone.utc)
 
 
-    def decode_positive_bignum(decoder, value, shareable_index=None):
+    def decode_positive_bignum(decoder, value):
         # Semantic tag 2
         from binascii import hexlify
         return int(hexlify(value), 16)
 
 
-    def decode_negative_bignum(decoder, value, shareable_index=None):
+    def decode_negative_bignum(decoder, value):
         # Semantic tag 3
         return -decoder.decode_positive_bignum(value) - 1
 
 
-    def decode_fraction(decoder, value, shareable_index=None):
+    def decode_fraction(decoder, value):
         # Semantic tag 4
         from decimal import Decimal
         exp = Decimal(value[0])
@@ -186,7 +186,7 @@ class CBORDecoder(object):
         return mantissa * (10 ** exp)
 
 
-    def decode_bigfloat(decoder, value, shareable_index=None):
+    def decode_bigfloat(decoder, value):
         # Semantic tag 5
         from decimal import Decimal
         exp = Decimal(value[0])
@@ -194,7 +194,12 @@ class CBORDecoder(object):
         return mantissa * (2 ** exp)
 
 
-    def decode_sharedref(decoder, value, shareable_index=None):
+    def decode_shareable(decoder, value):
+        # Semantic tag 28
+        decoder.set_shareable(None, value)
+        return value
+
+    def decode_sharedref(decoder, value):
         # Semantic tag 29
         try:
             shared = decoder._shareables[value]
@@ -207,24 +212,24 @@ class CBORDecoder(object):
             return shared
 
 
-    def decode_rational(decoder, value, shareable_index=None):
+    def decode_rational(decoder, value):
         # Semantic tag 30
         from fractions import Fraction
         return Fraction(*value)
 
 
-    def decode_regexp(decoder, value, shareable_index=None):
+    def decode_regexp(decoder, value):
         # Semantic tag 35
         return re.compile(value)
 
 
-    def decode_mime(decoder, value, shareable_index=None):
+    def decode_mime(decoder, value):
         # Semantic tag 36
         from email.parser import Parser
         return Parser().parsestr(value)
 
 
-    def decode_uuid(decoder, value, shareable_index=None):
+    def decode_uuid(decoder, value):
         # Semantic tag 37
         from uuid import UUID
         return UUID(bytes=value)
@@ -234,11 +239,11 @@ class CBORDecoder(object):
     # Special decoders (major tag 7)
     #
 
-    def decode_simple_value(decoder, tokendata, shareable_index=None):
+    def decode_simple_value(decoder, tokendata):
         return CBORSimpleValue(struct.unpack('>B', tokendata)[0])
 
 
-    def decode_float16(decoder, tokendata, shareable_index=None):
+    def decode_float16(decoder, tokendata):
         # Code adapted from RFC 7049, appendix D
         from math import ldexp
 
@@ -253,11 +258,11 @@ class CBORDecoder(object):
         return decode_single(value | 0x7f800000)
 
 
-    def decode_float32(decoder, tokendata, shareable_index=None):
+    def decode_float32(decoder, tokendata):
         return struct.unpack('>f', tokendata)[0]
 
 
-    def decode_float64(decoder, tokendata, shareable_index=None):
+    def decode_float64(decoder, tokendata):
         return struct.unpack('>d', tokendata)[0]
 
 
@@ -291,6 +296,7 @@ class CBORDecoder(object):
         3: decode_negative_bignum,
         4: decode_fraction,
         5: decode_bigfloat,
+        28: decode_shareable,
         29: decode_sharedref,
         30: decode_rational,
         35: decode_regexp,
@@ -329,7 +335,7 @@ class CBORDecoder(object):
     def _pop_shareable(self):
         self._shareables_stack.pop()
 
-    def set_shareable(self, index, value):
+    def set_shareable(self, _, value):
         """
         Set the shareable value for the last encountered shared value marker, if any.
 
@@ -341,13 +347,11 @@ class CBORDecoder(object):
 
         """
         if self._shareables_stack:
-            if index is None:
-                index = self._shareables_stack[-1]
-
-            assert index == self._shareables_stack[-1]
-            assert self._shareables[index] is None or self._shareables[index] is value
-
-            self._shareables[index] = value
+            index = self._shareables_stack[-1]
+            if self._shareables[index] is None:
+                self._shareables[index] = value
+            else:
+                assert self._shareables[index] is value
 
     def read_token(self):
         """
@@ -366,7 +370,7 @@ class CBORDecoder(object):
 
         return initial_byte, tokendata
 
-    def decode(self, shareable_index=None):
+    def decode(self):
         """
         Decode the next value from the stream.
 
@@ -383,7 +387,7 @@ class CBORDecoder(object):
 
         decoder = self.major_decoders[major_type]
         try:
-            return decoder(self, subtype, tokendata, shareable_index)
+            return decoder(self, subtype, tokendata)
         except CBORDecodeError:
             raise
         except Exception as e:
