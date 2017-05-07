@@ -24,11 +24,11 @@ size_by_subtype = (
     1, 2, 4, 8,   0, 0, 0, 0,
 )
 
-
 class CBORDecoder(object):
 
-    def decode_uint(decoder, subtype, tokendata):
+    def decode_uint(decoder, initial_byte, tokendata):
         # Major tag 0
+        subtype = initial_byte & 31
         if subtype < 24:
             return subtype
         elif subtype in fmt_by_subtype:
@@ -37,14 +37,15 @@ class CBORDecoder(object):
             raise CBORDecodeError('unknown unsigned integer subtype 0x%x' % subtype)
 
 
-    def decode_negint(decoder, subtype, tokendata):
+    def decode_negint(decoder, initial_byte, tokendata):
         # Major tag 1
-        uint = decoder.decode_uint(subtype, tokendata)
+        uint = decoder.decode_uint(initial_byte, tokendata)
         return -uint - 1
 
 
-    def decode_bytestring(decoder, subtype, tokendata):
+    def decode_bytestring(decoder, initial_byte, tokendata):
         # Major tag 2
+        subtype = initial_byte & 31
         if subtype == 31:
             # Indefinite length
             buf = bytearray()
@@ -58,13 +59,14 @@ class CBORDecoder(object):
             return tokendata
 
 
-    def decode_string(decoder, subtype, tokendata):
+    def decode_string(decoder, initial_byte, tokendata):
         # Major tag 3
-        return decoder.decode_bytestring(subtype, tokendata).decode('utf-8')
+        return decoder.decode_bytestring(initial_byte, tokendata).decode('utf-8')
 
 
-    def decode_array(decoder, subtype, tokendata):
+    def decode_array(decoder, initial_byte, tokendata):
         # Major tag 4
+        subtype = initial_byte & 31
         items = []
         decoder.set_shareable(None, items)
         if subtype == 31:
@@ -76,7 +78,7 @@ class CBORDecoder(object):
                 else:
                     items.append(value)
         else:
-            length = decoder.decode_uint(subtype, tokendata)
+            length = decoder.decode_uint(initial_byte, tokendata)
             for _ in xrange(length):
                 item = decoder.decode()
                 items.append(item)
@@ -84,8 +86,9 @@ class CBORDecoder(object):
         return items
 
 
-    def decode_map(decoder, subtype, tokendata):
+    def decode_map(decoder, initial_byte, tokendata):
         # Major tag 5
+        subtype = initial_byte & 31
         dictionary = {}
         decoder.set_shareable(None, dictionary)
         if subtype == 31:
@@ -98,7 +101,7 @@ class CBORDecoder(object):
                     value = decoder.decode()
                     dictionary[key] = value
         else:
-            length = decoder.decode_uint(subtype, tokendata)
+            length = decoder.decode_uint(initial_byte, tokendata)
             for _ in xrange(length):
                 key = decoder.decode()
                 value = decoder.decode()
@@ -110,9 +113,9 @@ class CBORDecoder(object):
             return dictionary
 
 
-    def decode_semantic(decoder, subtype, tokendata):
+    def decode_semantic(decoder, initial_byte, tokendata):
         # Major tag 6
-        tagnum = decoder.decode_uint(subtype, tokendata)
+        tagnum = decoder.decode_uint(initial_byte & 31, tokendata)
 
         # Special handling for the "shareable" tag
         if tagnum == 28:
@@ -133,8 +136,9 @@ class CBORDecoder(object):
             return tag
 
 
-    def decode_special(decoder, subtype, tokendata):
+    def decode_special(decoder, initial_byte, tokendata):
         # Simple value
+        subtype = initial_byte & 31
         if subtype < 20:
             return CBORSimpleValue(subtype)
 
@@ -370,6 +374,15 @@ class CBORDecoder(object):
 
         return initial_byte, tokendata
 
+    _cache = {}
+    def add_cache(self, token, value):
+        cache = self._cache
+        if token in cache:
+            assert value == cache[token]
+        cache[token] = value
+        if len(cache) > 400:
+            cache.clear()
+
     def decode(self):
         """
         Decode the next value from the stream.
@@ -378,7 +391,10 @@ class CBORDecoder(object):
 
         """
         try:
-            initial_byte, tokendata = self.read_token()
+            token = self.read_token()
+            if token in self._cache:
+                return self._cache[token]
+            initial_byte, tokendata = token
             major_type = initial_byte >> 5
             subtype = initial_byte & 31
         except Exception as e:
@@ -387,7 +403,10 @@ class CBORDecoder(object):
 
         decoder = self.major_decoders[major_type]
         try:
-            return decoder(self, subtype, tokendata)
+            result = decoder(self, subtype, tokendata)
+            if major_type not in (4, 5, 6) and len(tokendata) < 200:
+                self.add_cache(token, result)
+            return result
         except CBORDecodeError:
             raise
         except Exception as e:
