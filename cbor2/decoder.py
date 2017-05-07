@@ -232,8 +232,8 @@ class CBORDecoder(object):
     # Special decoders (major tag 7)
     #
 
-    def decode_simple_value(decoder, shareable_index=None):
-        return CBORSimpleValue(struct.unpack('>B', decoder.read(1))[0])
+    def decode_simple_value(decoder, tokendata, shareable_index=None):
+        return CBORSimpleValue(struct.unpack('>B', tokendata)[0])
 
 
     def decode_float16(decoder, shareable_index=None):
@@ -243,7 +243,7 @@ class CBORDecoder(object):
         def decode_single(single):
             return struct.unpack("!f", struct.pack("!I", single))[0]
 
-        payload = struct.unpack('>H', decoder.read(2))[0]
+        payload = struct.unpack('>H', tokendata)[0]
         value = (payload & 0x7fff) << 13 | (payload & 0x8000) << 16
         if payload & 0x7c00 != 0x7c00:
             return ldexp(decode_single(value), 112)
@@ -251,12 +251,12 @@ class CBORDecoder(object):
         return decode_single(value | 0x7f800000)
 
 
-    def decode_float32(decoder, shareable_index=None):
-        return struct.unpack('>f', decoder.read(4))[0]
+    def decode_float32(decoder, tokendata, shareable_index=None):
+        return struct.unpack('>f', tokendata)[0]
 
 
-    def decode_float64(decoder, shareable_index=None):
-        return struct.unpack('>d', decoder.read(8))[0]
+    def decode_float64(decoder, tokendata, shareable_index=None):
+        return struct.unpack('>d', tokendata)[0]
 
 
     major_decoders = {
@@ -271,15 +271,15 @@ class CBORDecoder(object):
     }
 
     special_decoders = {
-        20: lambda self: False,
-        21: lambda self: True,
-        22: lambda self: None,
-        23: lambda self: undefined,
+        20: lambda self, tokendata: False,
+        21: lambda self, tokendata: True,
+        22: lambda self, tokendata: None,
+        23: lambda self, tokendata: undefined,
         24: decode_simple_value,
         25: decode_float16,
         26: decode_float32,
         27: decode_float64,
-        31: lambda self: break_marker
+        31: lambda self, tokendata: break_marker
     }
 
     semantic_decoders = {
@@ -334,14 +334,22 @@ class CBORDecoder(object):
         if index is not None:
             self._shareables[index] = value
 
-    def read(self, amount):
+    def read_token(self):
         """
-        Read bytes from the data stream.
-
-        :param int amount: the number of bytes to read
-
+        Read initial byte and any immediately following data that is
+        not an independent item.
         """
-        return self.fp.read(amount)
+        initial_byte = byte_as_integer(self.fp.read(1))
+
+        subtype = initial_byte & 31
+        datasize = size_by_subtype[initial_byte & 31]
+        tokendata = self.fp.read(datasize)
+
+        if 0x60 <= initial_byte | 0x20 <= 0x7b:
+            datasize = self.decode_uint(subtype, tokendata)
+            tokendata = self.fp.read(datasize)
+
+        return initial_byte, tokendata
 
     def decode(self, shareable_index=None):
         """
@@ -351,7 +359,7 @@ class CBORDecoder(object):
 
         """
         try:
-            initial_byte = byte_as_integer(self.fp.read(1))
+            initial_byte, tokendata = self.read_token()
             major_type = initial_byte >> 5
             subtype = initial_byte & 31
         except Exception as e:
@@ -360,7 +368,7 @@ class CBORDecoder(object):
 
         decoder = self.major_decoders[major_type]
         try:
-            return decoder(self, subtype, shareable_index)
+            return decoder(self, subtype, tokendata, shareable_index)
         except CBORDecodeError:
             raise
         except Exception as e:
